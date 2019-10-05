@@ -25,7 +25,9 @@ helm plugin install https://github.com/cheeseandcereal/s3-public-helm-repo
 
 ## Usage
 
-Currently there are 2 commands:
+After installing, this plugin can be used by running `helm s3repo`.
+
+Currently there are 2 sub-commands:
 
 - configure: Configure (or create) an S3 bucket with the settings necessary to operate as a public helm repo
 - add: Add a chart to a configured S3 bucket, effectively updating the repository
