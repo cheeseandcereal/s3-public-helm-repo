@@ -29,3 +29,5 @@ Currently there are 2 commands:
 
 - configure: Configure (or create) an S3 bucket with the settings necessary to operate as a public helm repo
 - add: Add a chart to a configured S3 bucket, effectively updating the repository
+
+If using this in a non-interactive script, such as a CI/CD, use the appropriate `-y` or `-n` options at the end of a command.

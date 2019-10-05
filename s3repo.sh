@@ -1,14 +1,13 @@
 #!/bin/sh
-set -eu
+set -e
 
 usage() {
 cat << EOF
-Use and manage S3 as a public helm repository.
+Create and manage an S3 bucket as a public helm repository.
 
 Available Commands:
   configure  Configure (or create) an S3 bucket with the settings necessary to operate as a public helm repo
   add        Add a chart to a configured S3 bucket, effectively updating the repository
-
 EOF
 }
 
@@ -16,11 +15,21 @@ configure_usage() {
 cat << EOF
 Configure (or create) an S3 bucket with the settings necessary to operate as a public helm repo.
 
-This will set up the specified S3 bucket to be publicly accessible.
+This will set up the specified S3 bucket with a public index.yaml file.
 
-Example:
-    $ helm s3repo configure my-s3-bucket-name
+Usage:
+  helm s3repo configure <s3-bucket> [options]
 
+Examples:
+  # Create a helm repository with a new or existing bucket named 'my-s3-bucket'
+  $ helm s3repo configure my-s3-bucket
+
+  # Create a helm repository with the existing bucket 'my-s3-bucket', and exit on failure if any conflicting files exist
+  $ helm s3repo configure my-s3-bucket -n
+
+Options:
+  -y: Answer yes to all questions (attempt to create bucket if it doesn't exist, and overwrite conflicting objects if necessary)
+  -n: Answer no to all questions (exit on failure with any conflicts, or if the bucket doesn't exist)
 EOF
 }
 
@@ -30,11 +39,21 @@ Add a chart to a configured S3 bucket.
 
 After adding a chart, performing a 'helm repo update' should find the newly added chart.
 
-If you have an adjacent .prov file for verification, this will automatically find and upload that as well.
+If you have an adjacent .prov file for verification, this will be automatically uploaded as well.
 
-Example:
-    $ helm s3repo add my-s3-bucket-name foo-0.1.0.tgz
+Usage:
+  helm s3repo add <s3-bucket> <packaged-helm-chart> [options]
 
+Examples:
+  # Add the packaged foo-0.1.0.tgz chart to the s3-hosted helm repo in my-s3-bucket
+  $ helm s3repo add my-s3-bucket foo-0.1.0.tgz
+
+  # Add the packaged foo-0.1.0.tgz chart to the repo, but exit on failure with any conflicts
+  $ helm s3repo add my-s3-bucket foo-0.1.0.tgz -n
+
+Options:
+  -y: Answer yes to all questions (can overwrite existing chart with matching version)
+  -n: Answer no to all questions (exit on failure with any conflicts)
 EOF
 }
 
@@ -67,9 +86,17 @@ configure() {
     return
   fi
   bucket=$1
+  flag=$2
   while true; do
     if ! aws s3 ls "s3://$bucket" > /dev/null 2>&1; then
-      printf "S3 bucket '%s' either doesn't exist, or you don't have access to it. Would you like to try to create this bucket? [y/n] " "$bucket"; read -r answer
+      if [ "$flag" = "-n" ]; then
+        (>&2 printf "S3 bucket '%s' either doesn't exist, or you don't have access to it.\\n" "$bucket")
+        answer="n"
+      elif [ "$flag" = "-y" ]; then
+        answer="y"
+      else
+        printf "S3 bucket '%s' either doesn't exist, or you don't have access to it. Would you like to try to create this bucket? [y/n] " "$bucket"; read -r answer
+      fi
       case "$answer" in
         [yY]* )
           aws s3 mb "s3://$bucket"
@@ -87,7 +114,14 @@ configure() {
   done
   if aws s3 ls "s3://$bucket/index.yaml" > /dev/null 2>&1; then
     while true; do
-      printf "WARNING! Bucket '%s' already has an index.yaml. (Maybe it's already a helm repository?)\\nWould you like to delete this index and start a new repo in this bucket? [y/n] " "$bucket"; read -r answer
+      if [ "$flag" = "-n" ]; then
+        (>&2 printf "ERROR! Bucket '%s' already has an index.yaml. (Maybe it's already a helm repository?)\\n" "$bucket")
+        answer="n"
+      elif [ "$flag" = "-y" ]; then
+        answer="y"
+      else
+        printf "WARNING! Bucket '%s' already has an index.yaml. (Maybe it's already a helm repository?)\\nWould you like to delete this index and start a new repo in this bucket? [y/n] " "$bucket"; read -r answer
+      fi
       case "$answer" in
         [yY]* )
           break
@@ -105,7 +139,7 @@ configure() {
   tempdir="$(mktemp -d /tmp/s3repo.XXXXXXXXX)"
   (
     cd "$tempdir" || exit 1
-    helm repo index .
+    $HELM_BIN repo index .
     aws s3api put-object --bucket "$bucket" --content-type text/yaml --key index.yaml --body ./index.yaml --acl public-read > /dev/null
   )
   rm -rf "$tempdir"
@@ -120,7 +154,8 @@ add() {
   fi
   bucket=$1
   chart=$2
-  if ! helm lint "$chart" > /dev/null 2>&1; then
+  flag=$3
+  if ! $HELM_BIN lint "$chart" > /dev/null 2>&1; then
     echo "'$chart' does not appear to be a valid helm chart (Doesn't pass helm lint)"
     exit 1
   fi
@@ -137,7 +172,14 @@ add() {
   chart_tmp="$(ls -1 "$tempdir/")"
   if aws s3 ls "s3://$bucket/charts/$chart_tmp" > /dev/null 2>&1; then
     while true; do
-      printf "Chart %s already exists in S3. Would you like to delete and overwrite it? [y/n] " "$chart_tmp"; read -r answer
+      if [ "$flag" = "-n" ]; then
+        (>&2 printf "Chart %s already exists in S3\\n" "$chart_tmp")
+        answer="n"
+      elif [ "$flag" = "-y" ]; then
+        answer="y"
+      else
+        printf "Chart %s already exists in S3. Would you like to delete and overwrite it? [y/n] " "$chart_tmp"; read -r answer
+      fi
       case "$answer" in
         [yY]* )
           break
@@ -160,7 +202,7 @@ add() {
       exit 1
     fi
     # Create the new index.yaml, merging our existing index and specifying the url
-    helm repo index . --merge old_index.yaml --url "https://$bucket.s3.amazonaws.com/charts/"
+    $HELM_BIN repo index . --merge old_index.yaml --url "https://$bucket.s3.amazonaws.com/charts/"
     # Upload actual chart and new index
     aws s3api put-object --bucket "$bucket" --key "charts/$chart_tmp" --body "$chart_tmp" --acl public-read > /dev/null
     echo "Chart uploaded"
@@ -180,22 +222,22 @@ case "$1" in
   "configure" )
     if [ $# -lt 2 ]; then
       configure_usage
-      echo "Error: S3 bucket name required"
+      printf "\\nError: S3 bucket name required\\n"
       exit 1
     fi
-    configure "$2"
+    configure "$2" "$3"
     ;;
   "add" )
     if [ $# -lt 2 ]; then
       add_usage
-      echo "Error: S3 bucket name and chart required"
+      printf "\\nError: S3 bucket name and chart required\\n"
       exit 1
     elif [ $# -lt 3 ]; then
       add_usage
-      echo "Error: chart required"
+      printf "\\nError: chart required\\n"
       exit 1
     fi
-    add "$2" "$3"
+    add "$2" "$3" "$4"
     ;;
   * )
     usage
