@@ -1,0 +1,6 @@
+name: "s3repo"
+version: "0.1.0"
+usage: "create or update a public S3 helm repository"
+description: |-
+  This plugin allows creating/using an S3 bucket as a public helm repository.
+command: "$HELM_PLUGIN_DIR/s3repo.sh"
